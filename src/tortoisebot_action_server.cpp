@@ -1,97 +1,3 @@
-// #include "rclcpp/rclcpp.hpp"
-// #include "rclcpp_action/rclcpp_action.hpp"
-// #include <chrono>
-// #include <functional>
-// #include <memory>
-// #include <string>
-
-// class WaypointActionServer : public rclcpp::Node {
-// public:
-//   using WaypointAction = tortoisebot_waypoints::action::WaypointAction;
-//   using GoalHandle = rclcpp_action::ServerGoalHandle<WaypointAction>;
-
-//   explicit WaypointActionServer(
-//       const rclcpp::NodeOptions &options = rclcpp::NodeOptions())
-//       : Node("waypoint_action_server", options) {
-//     using namespace std::placeholders;
-
-//     this->action_server_ = rclcpp_action::create_server<WaypointAction>(
-//         this, "waypoint",
-//         std::bind(&WaypointActionServer::handle_goal, this, _1, _2),
-//         std::bind(&WaypointActionServer::handle_cancel, this, _1),
-//         std::bind(&WaypointActionServer::handle_accepted, this, _1));
-//   }
-
-// private:
-//   rclcpp_action::Server<WaypointAction>::SharedPtr action_server_;
-
-//   rclcpp_action::GoalResponse
-//   handle_goal(const rclcpp_action::GoalUUID &uuid,
-//               std::shared_ptr<const WaypointAction::Goal> goal) {
-//     RCLCPP_INFO(this->get_logger(),
-//                 "Received goal request with position x: %f, y: %f, z: %f",
-//                 goal->position.x, goal->position.y, goal->position.z);
-//     (void)uuid;
-//     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-//   }
-
-//   rclcpp_action::CancelResponse
-//   handle_cancel(const std::shared_ptr<GoalHandle> goal_handle) {
-//     RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
-//     (void)goal_handle;
-//     return rclcpp_action::CancelResponse::ACCEPT;
-//   }
-
-//   void handle_accepted(const std::shared_ptr<GoalHandle> goal_handle) {
-//     using namespace std::placeholders;
-//     std::thread{std::bind(&WaypointActionServer::execute, this, _1),
-//                 goal_handle}
-//         .detach();
-//   }
-
-//   void execute(const std::shared_ptr<GoalHandle> goal_handle) {
-//     RCLCPP_INFO(this->get_logger(), "Executing goal");
-//     rclcpp::Rate loop_rate(1);
-//     const auto goal = goal_handle->get_goal();
-//     auto feedback = std::make_shared<WaypointAction::Feedback>();
-//     auto result = std::make_shared<WaypointAction::Result>();
-
-//     for (int i = 0; i < 10; ++i) { // Assuming some logic here for
-//     demonstration
-//       // Check if there is a cancel request
-//       if (goal_handle->is_canceling()) {
-//         result->success = false;
-//         goal_handle->canceled(result);
-//         RCLCPP_INFO(this->get_logger(), "Goal canceled");
-//         return;
-//       }
-
-//       // Update feedback
-//       feedback->position = goal->position; // Example feedback update
-//       feedback->state = "In Progress";
-//       goal_handle->publish_feedback(feedback);
-//       RCLCPP_INFO(this->get_logger(), "Published feedback");
-
-//       loop_rate.sleep();
-//     }
-
-//     // Goal completed
-//     if (rclcpp::ok()) {
-//       result->success = true;
-//       goal_handle->succeed(result);
-//       RCLCPP_INFO(this->get_logger(), "Goal succeeded");
-//     }
-//   }
-// };
-
-// int main(int argc, char **argv) {
-//   rclcpp::init(argc, argv);
-//   auto node = std::make_shared<WaypointActionServer>();
-//   rclcpp::spin(node);
-//   rclcpp::shutdown();
-//   return 0;
-// }
-
 #include <cmath>
 #include <functional>
 #include <memory>
@@ -203,83 +109,101 @@ private:
         .detach();
   }
 
+  void normalize_yaw_error(double &err_yaw) {
+    // Normalize the yaw error to the range [-π, π]
+    while (err_yaw > M_PI) {
+      err_yaw -= 2.0 * M_PI;
+    }
+    while (err_yaw < -M_PI) {
+      err_yaw += 2.0 * M_PI;
+    }
+  }
+
   void execute(const std::shared_ptr<GoalHandleMove> goal_handle) {
     RCLCPP_INFO(this->get_logger(), "Executing goal");
+
     const auto goal = goal_handle->get_goal();
     auto feedback = std::make_shared<GoToPose::Feedback>();
-
     auto result = std::make_shared<GoToPose::Result>();
     auto move = geometry_msgs::msg::Twist();
 
+    // Define desired position and errors
     auto desired_pos = goal->position;
+    double desired_yaw =
+        atan2(desired_pos.y - cur_pos.y, desired_pos.x - cur_pos.x);
+    double err_pos = sqrt(pow(desired_pos.y - cur_pos.y, 2) +
+                          pow(desired_pos.x - cur_pos.x, 2));
+    double err_yaw = desired_yaw - cur_pos.theta;
 
-    const float MAX_LINEAR_SPEED = 0.2;
-    const float MAX_ANGULAR_SPEED = 0.5;
-    while (rclcpp::ok()) {
+    // Normalize the yaw error
+    normalize_yaw_error(err_yaw);
+
+    const double MAX_LINEAR_SPEED = 0.2;
+    const double MAX_ANGULAR_SPEED = 0.5;
+
+    float _dist_precision(0.05);
+    float _yaw_precision(M_PI / 90.0f);
+
+    while (rclcpp::ok() && err_pos > _dist_precision) {
+      desired_yaw = atan2(desired_pos.y - cur_pos.y, desired_pos.x - cur_pos.x);
+      err_yaw = desired_yaw - cur_pos.theta;
+      // Normalize the yaw error
+      normalize_yaw_error(err_yaw);
+      err_pos = sqrt(pow(desired_pos.y - cur_pos.y, 2) +
+                     pow(desired_pos.x - cur_pos.x, 2));
+
+      RCLCPP_INFO(this->get_logger(), "Current Yaw: %f", cur_pos.theta);
+      RCLCPP_INFO(this->get_logger(), "Desired Yaw: %f", desired_yaw);
+      RCLCPP_INFO(this->get_logger(), "Error Yaw: %f", err_yaw);
+
       // Check if there is a cancel request
       if (goal_handle->is_canceling()) {
-        // stop the robot
+        // Stop the robot
         move.linear.x = 0;
         move.angular.z = 0;
         vel_pub_->publish(move);
-        // set goal state
+
+        // Set goal state
         result->success = false;
         goal_handle->canceled(result);
         RCLCPP_INFO(this->get_logger(), "Goal canceled");
         return;
-      }
-
-      // calculate turning speed
-      float diff_x = desired_pos.x - cur_pos.x,
-            diff_y = desired_pos.y - cur_pos.y;
-      float dirc = atan2(diff_y, diff_x);
-
-      // Set linear speed
-      float abs_dist = sqrt(diff_x * diff_x + diff_y * diff_y);
-      move.linear.x = min(MAX_LINEAR_SPEED, abs_dist / 5);
-
-      // calculate true delta
-      float turn_delta;
-      if (abs_dist < 0.05) {
-        turn_delta = cur_pos.theta - desired_pos.theta;
+      } else if (fabs(err_yaw) > _yaw_precision) {
+        RCLCPP_INFO(this->get_logger(), "Fix yaw");
+        move.linear.x = 0;
+        move.angular.z = (err_yaw > 0 ? MAX_ANGULAR_SPEED : -MAX_ANGULAR_SPEED);
+        vel_pub_->publish(move);
       } else {
-        turn_delta = cur_pos.theta - dirc;
+        RCLCPP_INFO(this->get_logger(), "Go to point");
+        move.linear.x = std::min(MAX_LINEAR_SPEED, err_pos / 2.0f);
+        move.angular.z = 0;
+        vel_pub_->publish(move);
       }
-
-      if (abs(turn_delta) > M_PI) {
-        turn_delta =
-            turn_delta > 0 ? 2 * M_PI - turn_delta : 2 * M_PI + turn_delta;
-      }
-
-      // set angular speed
-      move.angular.z = min(MAX_ANGULAR_SPEED, turn_delta / -3);
-
-      vel_pub_->publish(move);
 
       feedback->position = cur_pos;
       goal_handle->publish_feedback(feedback);
       RCLCPP_INFO(this->get_logger(),
-                  "Publish feedback, reaching goal in %f distancel; %f turn "
-                  "delta; linear x "
-                  "speed: %f, angular z speed %f.",
-                  abs_dist, abs(turn_delta), move.linear.x, move.angular.z);
+                  "Publish feedback, reaching goal in %f distance; %f turn "
+                  "delta; linear x speed: %f, angular z speed %f.",
+                  err_pos, fabs(err_yaw), move.linear.x, move.angular.z);
 
-      // check if goal is compelete (if we are close enough)
-      if (abs_dist + abs(cur_pos.theta - desired_pos.theta) < 0.1) {
+      // Check if goal is complete (if we are close enough)
+      if (err_pos < 0.05 && fabs(cur_pos.theta - desired_pos.theta) < 0.1) {
         break;
       } else {
-        this_thread::sleep_for(100ms);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
     }
 
-    // Check if goal is done
-    if (rclcpp::ok()) {
+    // Stop the robot
+    move.linear.x = 0;
+    move.angular.z = 0;
+    vel_pub_->publish(move);
+
+    // Return success
+    if (err_pos < _dist_precision) {
       result->success = true;
-      move.linear.x = 0.0;
-      move.angular.z = 0.0;
-      vel_pub_->publish(move);
       goal_handle->succeed(result);
-      RCLCPP_INFO(this->get_logger(), "Goal succeeded");
     }
   }
 
