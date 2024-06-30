@@ -141,12 +141,20 @@ private:
     const double MAX_LINEAR_SPEED = 0.2;
     const double MAX_ANGULAR_SPEED = 0.5;
 
-    float _dist_precision(0.05);
-    float _yaw_precision(M_PI / 90.0f);
+    const double _dist_precision = 0.05;
+    const double _yaw_precision = M_PI / 90.0;
 
-    while (rclcpp::ok() && err_pos > _dist_precision) {
-      desired_yaw = atan2(desired_pos.y - cur_pos.y, desired_pos.x - cur_pos.x);
-      err_yaw = desired_yaw - cur_pos.theta;
+    while (rclcpp::ok() &&
+           (err_pos > _dist_precision || fabs(err_yaw) > _yaw_precision)) {
+      if (err_pos > _dist_precision) {
+        desired_yaw =
+            atan2(desired_pos.y - cur_pos.y, desired_pos.x - cur_pos.x);
+        err_yaw = desired_yaw - cur_pos.theta;
+      } else {
+        desired_yaw = desired_pos.theta;
+        err_yaw = desired_yaw - cur_pos.theta;
+      }
+
       // Normalize the yaw error
       normalize_yaw_error(err_yaw);
       err_pos = sqrt(pow(desired_pos.y - cur_pos.y, 2) +
@@ -168,17 +176,47 @@ private:
         goal_handle->canceled(result);
         RCLCPP_INFO(this->get_logger(), "Goal canceled");
         return;
-      } else if (fabs(err_yaw) > _yaw_precision) {
-        RCLCPP_INFO(this->get_logger(), "Fix yaw");
-        move.linear.x = 0;
-        move.angular.z = (err_yaw > 0 ? MAX_ANGULAR_SPEED : -MAX_ANGULAR_SPEED);
-        vel_pub_->publish(move);
-      } else {
-        RCLCPP_INFO(this->get_logger(), "Go to point");
-        move.linear.x = std::min(MAX_LINEAR_SPEED, err_pos / 2.0f);
-        move.angular.z = 0;
-        vel_pub_->publish(move);
       }
+
+      // Handle significant yaw error by rotating in place
+      if (fabs(err_yaw) > _yaw_precision * 10) {
+        move.linear.x = 0;
+        move.angular.z =
+            std::min(MAX_ANGULAR_SPEED,
+                     err_yaw * 0.5); // Proportional control for angular speed
+      } else {
+        // Regular movement towards the target
+        move.angular.z = (fabs(err_yaw) > _yaw_precision)
+                             ? std::min(MAX_ANGULAR_SPEED, err_yaw)
+                             : 0.0;
+        move.linear.x = (err_pos > _dist_precision)
+                            ? std::min(MAX_LINEAR_SPEED, err_pos * 0.5)
+                            : 0;
+      }
+
+      vel_pub_->publish(move);
+
+      //   if (err_pos > _dist_precision) {
+      //     move.linear.x =
+      //         std::min(MAX_LINEAR_SPEED,
+      //                  err_pos * 0.5); // Proportional control for linear
+      //                  speed
+      //     move.angular.z = (fabs(err_yaw) > _yaw_precision)
+      //                          ? (std::min(MAX_ANGULAR_SPEED, err_yaw))
+      //                          : 0.0; // Proportional control for angular
+      //                          speed
+      //   } else if (fabs(err_yaw) > _yaw_precision) {
+      //     move.linear.x = 0;
+      //     move.angular.z =
+      //         std::min(MAX_ANGULAR_SPEED,
+      //                  err_yaw * 0.5); // Proportional control for final
+      //                  pivot
+      //   } else {
+      //     move.linear.x = 0;
+      //     move.angular.z = 0;
+      //   }
+
+      //   vel_pub_->publish(move);
 
       feedback->position = cur_pos;
       goal_handle->publish_feedback(feedback);
@@ -187,12 +225,7 @@ private:
                   "delta; linear x speed: %f, angular z speed %f.",
                   err_pos, fabs(err_yaw), move.linear.x, move.angular.z);
 
-      // Check if goal is complete (if we are close enough)
-      if (err_pos < 0.05 && fabs(cur_pos.theta - desired_pos.theta) < 0.1) {
-        break;
-      } else {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     // Stop the robot
@@ -201,11 +234,100 @@ private:
     vel_pub_->publish(move);
 
     // Return success
-    if (err_pos < _dist_precision) {
+    if (err_pos < _dist_precision && fabs(err_yaw) < _yaw_precision) {
       result->success = true;
       goal_handle->succeed(result);
     }
   }
+
+  //   void execute(const std::shared_ptr<GoalHandleMove> goal_handle) {
+  //     RCLCPP_INFO(this->get_logger(), "Executing goal");
+
+  //     const auto goal = goal_handle->get_goal();
+  //     auto feedback = std::make_shared<GoToPose::Feedback>();
+  //     auto result = std::make_shared<GoToPose::Result>();
+  //     auto move = geometry_msgs::msg::Twist();
+
+  //     // Define desired position and errors
+  //     auto desired_pos = goal->position;
+  //     double desired_yaw =
+  //         atan2(desired_pos.y - cur_pos.y, desired_pos.x - cur_pos.x);
+  //     double err_pos = sqrt(pow(desired_pos.y - cur_pos.y, 2) +
+  //                           pow(desired_pos.x - cur_pos.x, 2));
+  //     double err_yaw = desired_yaw - cur_pos.theta;
+
+  //     // Normalize the yaw error
+  //     normalize_yaw_error(err_yaw);
+
+  //     const double MAX_LINEAR_SPEED = 0.2;
+  //     const double MAX_ANGULAR_SPEED = 0.5;
+
+  //     float _dist_precision(0.05);
+  //     float _yaw_precision(M_PI / 90.0f);
+
+  //     while (rclcpp::ok() && err_pos > _dist_precision) {
+  //       desired_yaw = atan2(desired_pos.y - cur_pos.y, desired_pos.x -
+  //       cur_pos.x); err_yaw = desired_yaw - cur_pos.theta;
+  //       // Normalize the yaw error
+  //       normalize_yaw_error(err_yaw);
+  //       err_pos = sqrt(pow(desired_pos.y - cur_pos.y, 2) +
+  //                      pow(desired_pos.x - cur_pos.x, 2));
+
+  //       RCLCPP_INFO(this->get_logger(), "Current Yaw: %f", cur_pos.theta);
+  //       RCLCPP_INFO(this->get_logger(), "Desired Yaw: %f", desired_yaw);
+  //       RCLCPP_INFO(this->get_logger(), "Error Yaw: %f", err_yaw);
+
+  //       // Check if there is a cancel request
+  //       if (goal_handle->is_canceling()) {
+  //         // Stop the robot
+  //         move.linear.x = 0;
+  //         move.angular.z = 0;
+  //         vel_pub_->publish(move);
+
+  //         // Set goal state
+  //         result->success = false;
+  //         goal_handle->canceled(result);
+  //         RCLCPP_INFO(this->get_logger(), "Goal canceled");
+  //         return;
+  //       } else if (fabs(err_yaw) > _yaw_precision) {
+  //         RCLCPP_INFO(this->get_logger(), "Fix yaw");
+  //         move.linear.x = 0;
+  //         move.angular.z = (err_yaw > 0 ? MAX_ANGULAR_SPEED :
+  //         -MAX_ANGULAR_SPEED); vel_pub_->publish(move);
+  //       } else {
+  //         RCLCPP_INFO(this->get_logger(), "Go to point");
+  //         move.linear.x = std::min(MAX_LINEAR_SPEED, err_pos / 2.0f);
+  //         move.angular.z = 0;
+  //         vel_pub_->publish(move);
+  //       }
+
+  //       feedback->position = cur_pos;
+  //       goal_handle->publish_feedback(feedback);
+  //       RCLCPP_INFO(this->get_logger(),
+  //                   "Publish feedback, reaching goal in %f distance; %f turn
+  //                   " "delta; linear x speed: %f, angular z speed %f.",
+  //                   err_pos, fabs(err_yaw), move.linear.x, move.angular.z);
+
+  //       // Check if goal is complete (if we are close enough)
+  //       if (err_pos < 0.05 && fabs(cur_pos.theta - desired_pos.theta) < 0.1)
+  //       {
+  //         break;
+  //       } else {
+  //         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  //       }
+  //     }
+
+  //     // Stop the robot
+  //     move.linear.x = 0;
+  //     move.angular.z = 0;
+  //     vel_pub_->publish(move);
+
+  //     // Return success
+  //     if (err_pos < _dist_precision) {
+  //       result->success = true;
+  //       goal_handle->succeed(result);
+  //     }
+  //   }
 
 }; // class GoToPoseActionServer
 
